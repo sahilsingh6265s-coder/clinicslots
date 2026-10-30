@@ -1,19 +1,181 @@
-# ClinicSlot
+# ClinicSlot: Doctor Appointment Booking API
 
-Doctor appointment booking API (FastAPI + PostgreSQL).
+![CI](https://github.com/<your-username>/<your-repo>/actions/workflows/ci.yml/badge.svg)
 
-## Run it
-```bash
-docker compose up --build
-# in another terminal, create the tables:
-docker compose exec api alembic revision --autogenerate -m "create tables"
-docker compose exec api alembic upgrade head
+A backend for booking doctor appointments. Patients see real availability and book instantly, doctors manage their day, and admins get a dashboard.
+
+**The problem:** many clinics still book by phone or on paper, which causes double bookings, long waits and no records. The interesting engineering question is: *what happens when two patients click "book 10:00 AM" at the same instant?* ClinicSlot answers that in the database, not in application code, and proves it with a concurrency test.
+
+## Features
+
+| Role | Can do |
+|---|---|
+| **Patient** | Sign up, log in, browse doctors by specialty, see free slots for a date, book, cancel, reschedule, view paginated history |
+| **Doctor** | Set a weekly schedule, view a day's appointments, mark appointments completed or no-show |
+| **Admin** | Create and remove doctors, view stats (bookings per day, busiest times, cancellations, per-doctor numbers) |
+
+## Tech stack
+
+Python 3.13, **FastAPI**, **PostgreSQL**, SQLAlchemy 2.0, Alembic (migrations), Pydantic, JWT + bcrypt, pytest, Docker, GitHub Actions.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    C[Client / Swagger UI] -->|HTTP + JWT| R[Routers<br/>HTTP only]
+    R --> D[Dependencies<br/>auth + role checks]
+    R --> S[Services<br/>business rules]
+    S --> M[SQLAlchemy models]
+    M --> DB[(PostgreSQL<br/>constraints enforce<br/>the hard rules)]
 ```
-Open http://localhost:8000/docs
 
-## Run tests (no database needed, uses in-memory SQLite)
+Routers only translate HTTP to function calls and exceptions to status codes. All rules (slot validation, cancellation cut-off, status transitions) live in `services/`, so they can be tested without HTTP.
+
+## Data model
+
+```mermaid
+erDiagram
+    USERS ||--o| DOCTORS : "has profile"
+    DOCTORS ||--o{ AVAILABILITY : "works"
+    DOCTORS ||--o{ APPOINTMENTS : "receives"
+    USERS ||--o{ APPOINTMENTS : "books"
+
+    USERS {
+        int id PK
+        string name
+        string email UK
+        string password_hash
+        string role "patient / doctor / admin"
+    }
+    DOCTORS {
+        int id PK
+        int user_id FK
+        string specialty
+        int slot_minutes
+        bool is_active
+    }
+    AVAILABILITY {
+        int id PK
+        int doctor_id FK
+        int weekday "0 = Monday"
+        time start_time
+        time end_time
+    }
+    APPOINTMENTS {
+        int id PK
+        int patient_id FK
+        int doctor_id FK
+        datetime slot_start "stored in UTC"
+        string status "confirmed / cancelled / completed / no_show"
+    }
+```
+
+## Quick start
+
+### With Docker (one command)
+
 ```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+docker compose up --build        # starts PostgreSQL + the API and applies migrations
+docker compose exec api python -m scripts.seed    # optional: fake demo data
+```
+
+### Without Docker
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate           # Mac/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env             # Windows: copy .env.example .env
+# create an empty PostgreSQL database matching DATABASE_URL in .env, then:
+alembic upgrade head
+python -m scripts.seed           # optional: fake demo data
+uvicorn app.main:app --reload
+```
+
+Open **http://localhost:8000/docs** for interactive API docs. Click **Authorize** and log in (the email goes in the `username` field).
+
+### Demo accounts (after seeding)
+
+All seeded accounts use the password `Password123`.
+
+| Role | Email |
+|---|---|
+| Admin | `admin@clinicslot.demo` |
+| Doctor | `doctor1@clinicslot.demo` ... `doctor10@clinicslot.demo` |
+| Patient | `patient1@clinicslot.demo` ... `patient20@clinicslot.demo` |
+
+To create your own admin instead: `python -m scripts.create_admin`.
+`python -m scripts.seed --reset` wipes the database and reseeds (it asks you to confirm).
+
+## API overview
+
+| Method | Path | Who | Purpose |
+|---|---|---|---|
+| POST | `/auth/signup` | anyone | Register as a patient |
+| POST | `/auth/login` | anyone | Get a JWT |
+| GET | `/auth/me` | any user | Current user |
+| GET | `/doctors?specialty=` | any user | Browse doctors |
+| GET | `/doctors/{id}/slots?date=` | any user | Free slots for a day |
+| POST | `/appointments` | patient | Book a slot |
+| PATCH | `/appointments/{id}` | patient | Reschedule (atomic) |
+| DELETE | `/appointments/{id}` | patient | Cancel (soft) |
+| GET | `/me/appointments?page=&page_size=&status=` | patient | Paginated history |
+| GET / PUT | `/doctor/availability` | doctor | View / replace weekly schedule |
+| GET | `/doctor/schedule?date=` | doctor | The day's appointments |
+| PATCH | `/doctor/appointments/{id}/status` | doctor | Mark completed / no_show |
+| POST | `/admin/doctors` | admin | Create a doctor |
+| DELETE | `/admin/doctors/{id}` | admin | Deactivate a doctor |
+| GET | `/admin/stats?from_date=&to_date=` | admin | Dashboard numbers |
+
+## Testing
+
+```bash
 pytest
 ```
+
+By default the tests use a throwaway in-memory SQLite database, so no setup is needed. To run them against real PostgreSQL, point `TEST_DATABASE_URL` at an **empty test database** (its tables are dropped and recreated for every test):
+
+```bash
+TEST_DATABASE_URL=postgresql+psycopg2://clinic:clinic@localhost:5432/clinicslot_test pytest
+```
+
+GitHub Actions runs the full suite against PostgreSQL on every push, and also fails the build if the models and the Alembic migrations disagree (`alembic check`).
+
+## Design decisions
+
+1. **No double booking, enforced by the database.** A partial unique index on `(doctor_id, slot_start) WHERE status = 'confirmed'` lets exactly one booking win a race. The code just inserts and turns the integrity error into `409`. A "check if free, then insert" in Python has a race window where two requests both pass the check. A concurrency test fires 8 simultaneous bookings and asserts exactly one succeeds.
+2. **Why a *partial* index?** A plain unique constraint would also count cancelled rows, so a cancelled slot could never be rebooked. Restricting it to confirmed rows keeps history without blocking the slot.
+3. **Slots are calculated, not stored.** Free slots come from the doctor's weekly windows minus existing appointments. This keeps the data small, and an availability change applies immediately. The generator is a pure function, so it is easy to unit-test.
+4. **Timezones.** Working hours are wall-clock times in the clinic's timezone (`CLINIC_TIMEZONE`, default `Asia/Kolkata`); appointments are stored in UTC. Conversion happens at the edges, and API requests must include a UTC offset (naive times are rejected).
+5. **Atomic rescheduling.** The old appointment is cancelled and the new one created in one transaction. If the new slot is taken, everything rolls back and the patient keeps the original.
+6. **Soft cancel and soft delete.** Cancelled appointments keep their row (history), and removing a doctor deactivates them. Past appointments and stats stay consistent. A doctor with upcoming appointments cannot be removed.
+7. **Layered code.** Routers (HTTP) -> services (rules) -> models (data). Rules can be tested without HTTP.
+8. **Security basics.** Passwords are hashed with bcrypt, JWTs expire, roles are checked in a reusable dependency, self-signup can only create patients, and other users' appointments return `404` rather than `403` so ids are not leaked.
+9. **Fast tests, real-database confidence.** Day-to-day tests run on SQLite; CI runs the same suite on PostgreSQL, where the concurrency guarantee actually matters.
+
+## Project structure
+
+```
+app/
+  core/        config, database session, security (hashing, JWT), auth dependencies
+  models/      SQLAlchemy tables
+  schemas/     Pydantic request / response models
+  services/    business logic (booking, slots, doctors, schedule, stats)
+  routers/     HTTP endpoints
+alembic/       database migrations
+scripts/       seed.py (demo data), create_admin.py
+tests/         unit, API and concurrency tests
+.github/       CI workflow
+```
+
+## Screenshots
+
+Add screenshots of the interactive docs and the stats endpoint here, for example in `docs/screenshots/`.
+
+## Known limitations and ideas
+
+- No email notifications and no frontend yet.
+- JWTs cannot be revoked before they expire (no refresh tokens or blocklist).
+- No rate limiting on login.
+- Admin stats are aggregated in Python after loading the date range. That is fine at clinic scale; at larger scale this would move into SQL.
+- A removed doctor's email stays reserved, and there is no "reactivate" endpoint.

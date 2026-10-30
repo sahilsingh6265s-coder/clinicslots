@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A real PostgreSQL next to the tests, so the double-booking
+    # concurrency test runs against the same database as production.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: clinic
+          POSTGRES_PASSWORD: clinic
+          POSTGRES_DB: clinicslot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clinic -d clinicslot_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://clinic:clinic@localhost:5432/clinicslot_test
+      TEST_DATABASE_URL: postgresql+psycopg2://clinic:clinic@localhost:5432/clinicslot_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Tests build their tables with create_all(), so they would NOT notice a
+      # forgotten migration. These two steps do.
+      - name: Apply migrations to an empty database
+        run: alembic upgrade head
+
+      - name: Fail if the models and migrations disagree
+        run: alembic check
+
+      - name: Run tests
+        run: pytest -q
