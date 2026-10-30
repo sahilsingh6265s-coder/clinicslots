@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -24,4 +24,16 @@ class Appointment(Base):
     status: Mapped[str] = mapped_column(String(20), default=AppointmentStatus.confirmed.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    # NOTE: the "no double booking" database constraint is added in Phase 3.
+    __table_args__ = (
+        # THE double-booking guarantee: at most ONE confirmed appointment per
+        # doctor per slot. It is "partial" (only rows with status = 'confirmed'),
+        # so cancelled appointments don't block the slot from being booked again.
+        Index(
+            "uq_confirmed_doctor_slot",
+            "doctor_id",
+            "slot_start",
+            unique=True,
+            postgresql_where=text("status = 'confirmed'"),
+            sqlite_where=text("status = 'confirmed'"),
+        ),
+    )

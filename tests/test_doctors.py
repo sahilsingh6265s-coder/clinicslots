@@ -1,40 +1,23 @@
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.models.appointment import Appointment, AppointmentStatus
 from app.models.user import Role
-from tests.helpers import create_user, login_headers, next_weekday
-
-DOCTOR = {
-    "name": "Dr. Rao",
-    "email": "rao@example.com",
-    "password": "doctorpass1",
-    "specialty": "Cardiology",
-    "slot_minutes": 30,
-}
-MONDAY_MORNING = [{"weekday": 0, "start_time": "10:00:00", "end_time": "12:00:00"}]
-
-
-def admin_headers(client, db):
-    create_user(db, "admin@example.com", "adminpass1", Role.admin.value, "Admin")
-    return login_headers(client, "admin@example.com", "adminpass1")
+from tests.helpers import (
+    DOCTOR,
+    MONDAY_MORNING,
+    TZ,
+    admin_headers,
+    create_user,
+    login_headers,
+    next_weekday,
+    setup_doctor,
+)
+from tests.helpers import patient_headers as _patient_headers
 
 
 def patient_headers(client, db):
-    create_user(db, "pat@example.com", "patientpass1", Role.patient.value, "Pat")
-    return login_headers(client, "pat@example.com", "patientpass1")
-
-
-def setup_doctor(client, db, windows=None):
-    """Admin creates a doctor, doctor sets availability. Returns (doctor_id, doctor_headers, admin_headers)."""
-    admin = admin_headers(client, db)
-    doctor = client.post("/admin/doctors", json=DOCTOR, headers=admin)
-    assert doctor.status_code == 201, doctor.text
-    headers = login_headers(client, DOCTOR["email"], DOCTOR["password"])
-    r = client.put("/doctor/availability", json=windows or MONDAY_MORNING, headers=headers)
-    assert r.status_code == 200, r.text
-    return doctor.json()["id"], headers, admin
+    return _patient_headers(client, db)[0]
 
 
 # ---------- admin creates doctors ----------
@@ -163,7 +146,7 @@ def test_past_date_has_no_slots(client, db_session):
 
 
 def _book(db, doctor_id, patient_id, day, hour, minute, status):
-    local = datetime(day.year, day.month, day.day, hour, minute, tzinfo=ZoneInfo(settings.clinic_timezone))
+    local = datetime(day.year, day.month, day.day, hour, minute, tzinfo=TZ)
     db.add(
         Appointment(
             patient_id=patient_id,

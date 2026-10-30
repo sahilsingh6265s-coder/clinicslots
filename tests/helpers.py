@@ -1,7 +1,20 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
+from app.core.config import settings
 from app.core.security import hash_password
-from app.models.user import User
+from app.models.user import Role, User
+
+TZ = ZoneInfo(settings.clinic_timezone)
+
+DOCTOR = {
+    "name": "Dr. Rao",
+    "email": "rao@example.com",
+    "password": "doctorpass1",
+    "specialty": "Cardiology",
+    "slot_minutes": 30,
+}
+MONDAY_MORNING = [{"weekday": 0, "start_time": "10:00:00", "end_time": "12:00:00"}]
 
 
 def create_user(db, email, password, role, name="Test User"):
@@ -19,6 +32,35 @@ def login_headers(client, email, password):
 
 
 def next_weekday(weekday: int) -> date:
-    """The next future date (1-7 days ahead) that falls on the given weekday."""
-    today = date.today()
-    return today + timedelta(days=((weekday - today.weekday()) % 7) or 7)
+    """A future date on the given weekday, at least 2 days ahead in the clinic's timezone."""
+    today = datetime.now(TZ).date()
+    days = ((weekday - today.weekday()) % 7) or 7
+    if days < 2:
+        days += 7
+    return today + timedelta(days=days)
+
+
+def iso_slot(day: date, hour: int, minute: int = 0) -> str:
+    """e.g. '2030-01-07T10:00:00+05:30' (clinic-local time with offset)."""
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=TZ).isoformat()
+
+
+def admin_headers(client, db):
+    create_user(db, "admin@example.com", "adminpass1", Role.admin.value, "Admin")
+    return login_headers(client, "admin@example.com", "adminpass1")
+
+
+def patient_headers(client, db, email="pat@example.com", name="Pat"):
+    user = create_user(db, email, "patientpass1", Role.patient.value, name)
+    return login_headers(client, email, "patientpass1"), user
+
+
+def setup_doctor(client, db, windows=None):
+    """Admin creates a doctor, doctor sets availability. Returns (doctor_id, doctor_headers, admin_headers)."""
+    admin = admin_headers(client, db)
+    doctor = client.post("/admin/doctors", json=DOCTOR, headers=admin)
+    assert doctor.status_code == 201, doctor.text
+    headers = login_headers(client, DOCTOR["email"], DOCTOR["password"])
+    r = client.put("/doctor/availability", json=windows or MONDAY_MORNING, headers=headers)
+    assert r.status_code == 200, r.text
+    return doctor.json()["id"], headers, admin

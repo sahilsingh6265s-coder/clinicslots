@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     # Doctors' working hours are wall-clock times in this timezone.
     clinic_timezone: str = "Asia/Kolkata"
+    # Patients cannot cancel or reschedule an appointment that starts sooner than this.
+    cancellation_cutoff_hours: int = 2
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
