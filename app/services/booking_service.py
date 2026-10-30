@@ -104,7 +104,7 @@ def to_out(db: Session, appointment: Appointment) -> AppointmentOut:
 
 def book_appointment(db: Session, patient: User, doctor_id: int, slot_start: datetime) -> Appointment:
     doctor = db.get(Doctor, doctor_id)
-    if doctor is None:
+    if doctor is None or not doctor.is_active:
         raise DoctorNotFound()
     start_utc = _validate_slot(db, doctor, slot_start)
 

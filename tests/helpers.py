@@ -64,3 +64,18 @@ def setup_doctor(client, db, windows=None):
     r = client.put("/doctor/availability", json=windows or MONDAY_MORNING, headers=headers)
     assert r.status_code == 200, r.text
     return doctor.json()["id"], headers, admin
+
+
+def book_slot(client, headers, doctor_id, slot_iso):
+    return client.post("/appointments", json={"doctor_id": doctor_id, "slot_start": slot_iso}, headers=headers)
+
+
+def add_second_doctor(client, admin, email="sen@example.com", name="Dr. Sen", specialty="Dermatology"):
+    """Admin creates another doctor with a Monday-morning schedule. Returns (doctor_id, headers)."""
+
+    body = {**DOCTOR, "name": name, "email": email, "specialty": specialty}
+    r = client.post("/admin/doctors", json=body, headers=admin)
+    assert r.status_code == 201, r.text
+    headers = login_headers(client, email, DOCTOR["password"])
+    assert client.put("/doctor/availability", json=MONDAY_MORNING, headers=headers).status_code == 200
+    return r.json()["id"], headers

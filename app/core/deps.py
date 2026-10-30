@@ -48,4 +48,6 @@ def get_current_doctor(
     doctor = db.scalar(select(Doctor).where(Doctor.user_id == user.id))
     if doctor is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Doctor profile not found")
+    if not doctor.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Doctor account is deactivated")
     return doctor
