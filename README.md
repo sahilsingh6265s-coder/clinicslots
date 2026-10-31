@@ -1,10 +1,16 @@
 # ClinicSlot: Doctor Appointment Booking API
 
-![CI](https://github.com/<your-username>/<your-repo>/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/sahilsingh6265s-coder/clinicslots/actions/workflows/ci.yml/badge.svg)
 
 A backend for booking doctor appointments. Patients see real availability and book instantly, doctors manage their day, and admins get a dashboard.
 
 **The problem:** many clinics still book by phone or on paper, which causes double bookings, long waits and no records. The interesting engineering question is: *what happens when two patients click "book 10:00 AM" at the same instant?* ClinicSlot answers that in the database, not in application code, and proves it with a concurrency test.
+
+## Live demo
+
+> **API + interactive docs:** https://YOUR-SERVICE-NAME.onrender.com/docs  *(replace with your Render URL)*
+
+Hosted on free tiers, so the **first request after ~15 minutes idle takes up to a minute** while the server wakes up (and a few extra seconds while the database resumes). After that it is fast. Log in with a demo account from the table below.
 
 ## Features
 
@@ -96,13 +102,20 @@ Open **http://localhost:8000/docs** for interactive API docs. Click **Authorize*
 
 ### Demo accounts (after seeding)
 
-All seeded accounts use the password `Password123`.
+Seeded patient and doctor accounts use the password `Password123`.
 
 | Role | Email |
 |---|---|
-| Admin | `admin@clinicslot.demo` |
+| Admin | `admin@clinicslot.demo` (see the note below about its password) |
 | Doctor | `doctor1@clinicslot.demo` ... `doctor10@clinicslot.demo` |
 | Patient | `patient1@clinicslot.demo` ... `patient20@clinicslot.demo` |
+
+The admin uses `Password123` too by default, which is fine locally. For a **public** demo, seed with a private admin password so only you can use the admin endpoints:
+
+```bash
+python -m scripts.seed --private-admin      # asks for the password (hidden input)
+# or, for non-interactive runs, set the SEED_ADMIN_PASSWORD environment variable
+```
 
 To create your own admin instead: `python -m scripts.create_admin`.
 `python -m scripts.seed --reset` wipes the database and reseeds (it asks you to confirm).
@@ -126,6 +139,27 @@ To create your own admin instead: `python -m scripts.create_admin`.
 | POST | `/admin/doctors` | admin | Create a doctor |
 | DELETE | `/admin/doctors/{id}` | admin | Deactivate a doctor |
 | GET | `/admin/stats?from_date=&to_date=` | admin | Dashboard numbers |
+
+## Deployment
+
+The API runs on **Render** (free web service) and the database on **Neon** (free PostgreSQL). Render's own free database expires after 30 days, which is why the database lives elsewhere.
+
+| Setting | Value |
+|---|---|
+| Build command | `pip install -r requirements.txt` |
+| Start command | `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+| Health check path | `/health` |
+
+| Environment variable | Value |
+|---|---|
+| `DATABASE_URL` | the Neon connection string (the `postgresql://...` form is fine; the app adds the driver name) |
+| `SECRET_KEY` | a long random string, 32+ characters. With `ENVIRONMENT=production` the app **refuses to start** if it is missing or weak |
+| `ENVIRONMENT` | `production` |
+| `PYTHON_VERSION` | `3.13.5` |
+
+`render.yaml` contains the same settings as a Render Blueprint. Migrations run automatically on every deploy because they are part of the start command.
+
+To load demo data into the hosted database, run the seed **from your own computer** with `DATABASE_URL` pointing at the hosted database (see the seed section above), then remove that variable again.
 
 ## Testing
 
@@ -166,6 +200,7 @@ alembic/       database migrations
 scripts/       seed.py (demo data), create_admin.py
 tests/         unit, API and concurrency tests
 .github/       CI workflow
+render.yaml    Render deployment settings (optional Blueprint)
 ```
 
 ## Screenshots
@@ -175,6 +210,7 @@ Add screenshots of the interactive docs and the stats endpoint here, for example
 ## Known limitations and ideas
 
 - No email notifications and no frontend yet.
+- Free-tier hosting: the server sleeps when idle, so the first request can be slow.
 - JWTs cannot be revoked before they expire (no refresh tokens or blocklist).
 - No rate limiting on login.
 - Admin stats are aggregated in Python after loading the date range. That is fine at clinic scale; at larger scale this would move into SQL.

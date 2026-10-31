@@ -3,11 +3,16 @@
     python -m scripts.seed                 # only works on an EMPTY database
     python -m scripts.seed --reset         # wipe ALL data first (asks you to type YES)
     python -m scripts.seed --reset --yes   # same, without the question
+    python -m scripts.seed --private-admin # ask for a private admin password (hidden input)
 
-Everything here is fake (Faker library). Every seeded account uses the same
-demo password, printed at the end. Never run this against real data.
+Everything here is fake (Faker library). Patients and doctors all use the same
+demo password, printed at the end. The admin uses it too UNLESS you give a
+private password, either with --private-admin or the SEED_ADMIN_PASSWORD
+environment variable. Never run this against real data.
 """
 import argparse
+import getpass
+import os
 import random
 import sys
 from datetime import datetime, time, timedelta, timezone
@@ -51,6 +56,33 @@ def _windows_for(db: Session, doctor_id: int, day):
     ]
 
 
+def validate_admin_password(password: str) -> str:
+    """Same rules as the API: 8 characters minimum, at most 72 bytes (a bcrypt limit)."""
+    if len(password) < 8:
+        raise ValueError("Admin password must be at least 8 characters")
+    if len(password.encode("utf-8")) > 72:
+        raise ValueError("Admin password must be at most 72 bytes")
+    return password
+
+
+def resolve_admin_password(private: bool, environ=os.environ, ask=getpass.getpass) -> str | None:
+    """None means "use the public demo password".
+
+    SEED_ADMIN_PASSWORD wins (handy for non-interactive runs); otherwise
+    --private-admin asks twice with hidden input. Passing the password as a
+    command-line flag is deliberately NOT supported: it would end up in shell history.
+    """
+    from_env = environ.get("SEED_ADMIN_PASSWORD")
+    if from_env:
+        return validate_admin_password(from_env)
+    if not private:
+        return None
+    first = ask("Private admin password (min 8 characters): ")
+    if ask("Repeat it: ") != first:
+        raise ValueError("The two passwords did not match")
+    return validate_admin_password(first)
+
+
 def wipe(db: Session) -> None:
     """Delete everything, children first (foreign keys)."""
     for model in (Appointment, Availability, Doctor, User):
@@ -58,8 +90,19 @@ def wipe(db: Session) -> None:
     db.commit()
 
 
-def seed(db: Session, n_doctors: int = 10, n_patients: int = 20, rng_seed: int = 42) -> dict:
-    """Create the demo data. Raises AlreadySeeded if any user exists."""
+def seed(
+    db: Session,
+    n_doctors: int = 10,
+    n_patients: int = 20,
+    rng_seed: int = 42,
+    admin_password: str | None = None,
+) -> dict:
+    """Create the demo data. Raises AlreadySeeded if any user exists.
+
+    admin_password=None gives the admin the public demo password; pass a value to keep it private.
+    """
+    if admin_password is not None:
+        validate_admin_password(admin_password)  # fail before anything is written
     if db.scalar(select(func.count()).select_from(User)):
         raise AlreadySeeded("The database already has users. Use --reset to wipe it first.")
 
@@ -70,7 +113,7 @@ def seed(db: Session, n_doctors: int = 10, n_patients: int = 20, rng_seed: int =
     today = datetime.now(tz).date()
 
     # --- admin ---
-    db.add(User(name="Clinic Admin", email=ADMIN_EMAIL, password_hash=hash_password(DEMO_PASSWORD), role=Role.admin.value))
+    db.add(User(name="Clinic Admin", email=ADMIN_EMAIL, password_hash=hash_password(admin_password or DEMO_PASSWORD), role=Role.admin.value))
     db.commit()
 
     # --- doctors, created the same way the admin API does it ---
@@ -155,6 +198,7 @@ def seed(db: Session, n_doctors: int = 10, n_patients: int = 20, rng_seed: int =
         "upcoming_appointments": upcoming,
         "cancelled_upcoming": cancelled_upcoming,
         "past_appointments": past,
+        "admin_password_is_private": admin_password is not None,
     }
 
 
@@ -167,7 +211,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Seed ClinicSlot with fake demo data.")
     parser.add_argument("--reset", action="store_true", help="delete ALL existing data first")
     parser.add_argument("--yes", action="store_true", help="do not ask for confirmation with --reset")
+    parser.add_argument("--private-admin", action="store_true", help="ask for a private admin password (hidden input)")
     args = parser.parse_args()
+
+    try:
+        admin_password = resolve_admin_password(args.private_admin)
+    except ValueError as exc:
+        print(exc)
+        sys.exit(1)
 
     target = engine.url.render_as_string(hide_password=True)
     with SessionLocal() as db:
@@ -179,17 +230,21 @@ def main() -> None:
                     return
             wipe(db)
         try:
-            summary = seed(db)
+            summary = seed(db, admin_password=admin_password)
         except AlreadySeeded as exc:
             print(exc)
             sys.exit(1)
 
     print(f"Seeded {target}")
+    private = summary.pop("admin_password_is_private")
     for key, value in summary.items():
         print(f"  {key.replace('_', ' ')}: {value}")
-    print("\nDemo logins (all use the same password):")
-    print(f"  password : {DEMO_PASSWORD}")
-    print(f"  admin    : {ADMIN_EMAIL}")
+    print("\nDemo logins:")
+    print(f"  patients and doctors, password : {DEMO_PASSWORD}")
+    if private:
+        print(f"  admin    : {ADMIN_EMAIL}  (the private password you just set)")
+    else:
+        print(f"  admin    : {ADMIN_EMAIL}  (same demo password, which is PUBLIC if you share it)")
     print("  doctor   : doctor1@clinicslot.demo ... doctor10@clinicslot.demo")
     print("  patient  : patient1@clinicslot.demo ... patient20@clinicslot.demo")
 

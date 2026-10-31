@@ -1,0 +1,20 @@
+# Optional "Blueprint": Render can read this file (New -> Blueprint) to fill in the
+# same settings you would otherwise type by hand. The database is NOT created here:
+# it lives on Neon, so DATABASE_URL is entered in the Render dashboard.
+services:
+  - type: web
+    name: clinicslot-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        sync: false          # paste your Neon connection string in the dashboard
+      - key: SECRET_KEY
+        generateValue: true  # Render generates a long random value
