@@ -6,6 +6,91 @@ A backend for booking doctor appointments. Patients see real availability and bo
 
 **The problem:** many clinics still book by phone or on paper, which causes double bookings, long waits and no records. The interesting engineering question is: *what happens when two patients click "book 10:00 AM" at the same instant?* ClinicSlot answers that in the database, not in application code, and proves it with a concurrency test.
 
+> **Portfolio positioning:** ClinicSlot is a healthcare operations and capacity-allocation project. It is not a warehouse or logistics system, but it demonstrates the same supply-chain fundamentals: matching demand to constrained capacity, preventing over-allocation, preserving an audit trail, and turning operational events into management metrics.
+
+<details open>
+<summary><strong>Project tour</strong></summary>
+
+- [What the system does](#what-the-system-does)
+- [End-to-end workflow](#end-to-end-workflow)
+- [Why this is a strong operations project](#why-this-is-a-strong-operations-project)
+- [Run it locally](#quick-start)
+- [Try the API interactively](#interactive-api-walkthrough)
+- [Architecture and data model](#architecture)
+- [Reliability and security proof](#design-decisions)
+
+</details>
+
+## What the system does
+
+ClinicSlot treats appointment time as a finite operational resource:
+
+1. A doctor publishes recurring working windows.
+2. The platform calculates bookable slots from those windows.
+3. A patient selects a slot and submits a booking request.
+4. The database atomically accepts one winner if requests race for the same capacity.
+5. Doctors update fulfillment status, while admins monitor demand, cancellations and utilization.
+
+The result is a complete workflow from **capacity planning → allocation → fulfillment → reporting**, exposed through a documented FastAPI service.
+
+## End-to-end workflow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Patient
+    participant API as FastAPI API
+    participant S as Services
+    participant DB as PostgreSQL
+    participant D as Doctor
+    participant A as Admin
+
+    P->>API: Sign up / log in
+    API->>DB: Verify user and issue JWT
+    D->>API: Publish weekly availability
+    API->>S: Validate schedule
+    S->>DB: Save availability
+    P->>API: Request slots for a date
+    API->>S: Generate slots minus confirmed bookings
+    S->>DB: Read schedule and appointments
+    DB-->>P: Return real-time free slots
+    P->>API: Book a slot
+    API->>S: Validate ownership, time and cutoff
+    S->>DB: Insert confirmed appointment
+    DB-->>P: Confirm booking or return 409 if already taken
+    D->>API: Mark completed or no-show
+    A->>API: Request operational statistics
+    API->>DB: Read appointment history
+    DB-->>A: Return daily, doctor and status metrics
+```
+
+<details>
+<summary><strong>Role-by-role journey</strong></summary>
+
+| Actor | Workflow | Operational outcome |
+|---|---|---|
+| Patient | Register → discover specialty → view live slots → book/cancel/reschedule → review history | Less friction and fewer missed or duplicate bookings |
+| Doctor | Configure weekly hours → view daily schedule → complete/no-show appointments | A reliable working-day queue |
+| Admin | Create/deactivate doctors → inspect daily and per-doctor statistics | Capacity visibility and accountable operations |
+
+</details>
+
+## Why this is a strong operations project
+
+This is a compelling supply-chain-adjacent portfolio project because it shows more than CRUD:
+
+| Operations concept | ClinicSlot implementation | Why it matters |
+|---|---|---|
+| Constrained capacity | Doctor time windows become bookable slots | Prevents selling unavailable capacity |
+| Demand allocation | Patients compete for the same finite slot | Models real allocation pressure |
+| Transaction integrity | PostgreSQL partial unique index allows one confirmed winner | Eliminates double booking under concurrency |
+| Flexibility and recovery | Cancellation and atomic rescheduling release or move demand | Keeps capacity reusable without losing history |
+| Fulfillment tracking | Confirmed, cancelled, completed and no-show states | Separates planned work from delivered work |
+| Operational intelligence | Admin statistics by day, time, doctor and status | Supports staffing and utilization decisions |
+| Traceability | Soft cancellation and deactivation preserve records | Makes decisions auditable |
+
+It is a strong demonstration of production thinking: business rules are separated from HTTP handlers, security is role-based, migrations are versioned, and CI runs the test suite against PostgreSQL.
+
 ## Live demo
 
 > **API + interactive docs:** https://YOUR-SERVICE-NAME.onrender.com/docs  *(replace with your Render URL)*
@@ -36,6 +121,33 @@ flowchart LR
 ```
 
 Routers only translate HTTP to function calls and exceptions to status codes. All rules (slot validation, cancellation cut-off, status transitions) live in `services/`, so they can be tested without HTTP.
+
+## Interactive API walkthrough
+
+After starting the service, open **[Swagger UI](http://localhost:8000/docs)**:
+
+<details>
+<summary><strong>Run a complete demo in Swagger UI</strong></summary>
+
+1. `POST /auth/login` with a seeded patient account and copy the JWT.
+2. Click **Authorize**, enter the token, and select **Authorize**.
+3. `GET /doctors` to find a doctor.
+4. `GET /doctors/{id}/slots?date=YYYY-MM-DD` to inspect calculated capacity.
+5. `POST /appointments` with a returned `slot_start` to allocate one slot.
+6. `GET /me/appointments` to confirm the patient's operational history.
+7. Log in as a doctor and use `/doctor/schedule` plus the status endpoint to complete the workflow.
+8. Log in as an admin and call `/admin/stats` to see the resulting demand and fulfillment metrics.
+
+The OpenAPI page is generated from the same schemas and routes used by the application, so it is both documentation and a live integration surface.
+
+</details>
+
+<details>
+<summary><strong>What happens when two patients book simultaneously?</strong></summary>
+
+Both requests may read the slot as available, but only one database insert can satisfy the partial unique index for a confirmed appointment. The winner receives success; the other receives `409 Conflict`. The concurrency test fires eight simultaneous requests and verifies that exactly one succeeds. This is safer than relying on a check-then-insert sequence in Python.
+
+</details>
 
 ## Data model
 
