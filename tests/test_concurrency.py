@@ -1,6 +1,7 @@
 """Proof that the database, not application code, prevents double booking."""
+from concurrent.futures import ThreadPoolExecutor
 import threading
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -108,3 +109,44 @@ def test_constraint_is_per_doctor_and_per_slot(engine):
         _add(db, doctor_id, patients[0], _slot(day, 10), CONFIRMED)
         _add(db, doctor_id, patients[1], _slot(day, 11), CONFIRMED)  # different time: fine
         db.commit()
+
+
+
+def test_one_appointment_can_only_be_rescheduled_once(concurrent_engine, monkeypatch):
+    doctor_id, (patient_id,) = _seed_doctor_and_patients(concurrent_engine, 1)
+    day = next_weekday(0) + timedelta(days=7)
+    with Session(concurrent_engine) as db:
+        patient = db.get(User, patient_id)
+        original_id = booking_service.book_appointment(db, patient, doctor_id, _slot(day)).id
+
+    # Both sessions finish validation while the original is still confirmed.
+    barrier = threading.Barrier(2, timeout=10)
+    validate = booking_service._validate_slot
+
+    def validate_together(*args):
+        start = validate(*args)
+        barrier.wait()
+        return start
+
+    monkeypatch.setattr(booking_service, "_validate_slot", validate_together)
+    targets = [_slot(day, 11), _slot(day, 11) + timedelta(minutes=30)]
+
+    def move(target):
+        with Session(concurrent_engine) as db:
+            patient = db.get(User, patient_id)
+            try:
+                replacement = booking_service.reschedule_appointment(db, patient, original_id, target)
+            except booking_service.NotChangeable:
+                return None
+            return replacement.id
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(move, targets))
+
+    assert results.count(None) == 1
+    winner = next(i for i, result in enumerate(results) if result is not None)
+    with Session(concurrent_engine) as db:
+        assert db.get(Appointment, original_id).status == CANCELLED
+        confirmed = db.query(Appointment).filter_by(patient_id=patient_id, status=CONFIRMED).one()
+        assert confirmed.id == results[winner]
+        assert booking_service.as_utc(confirmed.slot_start) == targets[winner]
