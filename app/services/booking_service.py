@@ -7,7 +7,7 @@ database's partial unique index (see models/appointment.py) reject the loser.
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -149,7 +149,17 @@ def reschedule_appointment(
     if new_start == as_utc(old.slot_start):
         raise InvalidSlot("Choose a different time from your current appointment")
 
-    old.status = AppointmentStatus.cancelled.value
+    # Claim this specific confirmed booking before inserting its replacement.
+    # A concurrent move to a different free slot must also lose this claim.
+    claim = db.execute(
+        update(Appointment)
+        .where(Appointment.id == old.id, Appointment.status == AppointmentStatus.confirmed.value)
+        .values(status=AppointmentStatus.cancelled.value)
+    )
+    if claim.rowcount != 1:
+        db.rollback()
+        raise NotChangeable("Appointment is no longer confirmed")
+
     new = Appointment(
         patient_id=patient.id,
         doctor_id=old.doctor_id,
